@@ -1,3 +1,5 @@
+from http.server import HTTPServer, BaseHTTPRequestHandler
+import threading
 from telegram.ext import CommandHandler
 import os
 import re
@@ -97,18 +99,18 @@ def search_event(keyword: str, dstart=None, dend=None):
     if cal is None:
         print("❌ Could not find calendar")
         return None
-    
+
     # Use datetime objects, not strings
     if dstart is None:
         dstart = datetime.now(UTC)
     if dend is None:
         # Search for events in the next 30 days
         dend = datetime.now(UTC) + timedelta(days=30)
-    
+
     try:
         # Get all events from calendar
         events_fetched = cal.search(event=True, expand=False)
-        
+
         for event in events_fetched:
             summary = event.icalendar_component.get("summary")
             if summary and keyword.lower() in summary.lower():
@@ -117,7 +119,7 @@ def search_event(keyword: str, dstart=None, dend=None):
     except Exception as e:
         print(f"❌ Error searching events: {str(e)}")
         return None
-    
+
     return None
 
 
@@ -159,8 +161,28 @@ async def delete_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Register it alongside your existing handler
 
 
-app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-app.add_handler(MessageHandler(
-    filters.TEXT & ~filters.COMMAND, handle_message))
-app.add_handler(CommandHandler("delete", delete_cmd))
-app.run_polling()
+class Health(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"ok")
+
+    def log_message(self, *args):
+        pass  # silence access logs
+
+
+def run_health():
+    HTTPServer(("0.0.0.0", 8080), Health).serve_forever()
+
+
+if __name__ == "__main__":
+
+    threading.Thread(target=run_health, daemon=True).start()
+
+    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    app.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND, handle_message))
+
+    app.add_handler(CommandHandler("delete", delete_cmd))
+    print("Bot is running...")
+    app.run_polling(drop_pending_updates=True)
