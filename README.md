@@ -1,14 +1,14 @@
-# 🤖 Agentic Telegram Calendar Bot
+# 🤖 Telegram Calendar Bot
 
-A fully agentic Telegram bot powered by Claude that manages your Apple Calendar through natural language.
+A Telegram bot powered by DeepSeek LLM that manages your iCloud calendar via CalDAV. Hosted on fly.io.
 
 ## How It Works
 
 ```
-You (Telegram) → Bot → Claude (thinks + picks tools) → Apple Calendar → Claude (summarizes) → You
+You (Telegram) → Bot → DeepSeek (extracts event details) → CalDAV → iCloud Calendar
 ```
 
-Claude uses a **tool-use agentic loop**: it decides which calendar functions to call, executes them, reads the results, and replies — all automatically.
+The bot listens to your messages, uses DeepSeek to extract calendar event information, and automatically creates/deletes events in your iCloud calendar.
 
 ---
 
@@ -19,46 +19,43 @@ Claude uses a **tool-use agentic loop**: it decides which calendar functions to 
 - Send `/newbot` and follow prompts
 - Copy your **bot token**
 
-### 2. Get an Anthropic API Key
-- Go to https://console.anthropic.com
+### 2. Get a DeepSeek API Key
+- Go to https://platform.deepseek.com
 - Create an API key
 
-### 3. Install dependencies (macOS required for Apple Calendar)
+### 3. Get iCloud Credentials
+- Your Apple ID email as `ICLOUD_USER`
+- An [app-specific password](https://support.apple.com/en-us/102654) as `ICLOUD_APP_PASS`
+- Have a calendar named "Agentic" in iCloud, make it available for public.
+
+### 4. Local Development
 ```bash
 pip install -r requirements.txt
-```
-
-### 4. Set environment variables
-```bash
-export TELEGRAM_TOKEN="your-telegram-token"
-export ANTHROPIC_API_KEY="your-anthropic-key"
-export TIMEZONE="Asia/Singapore"   # or your local timezone
-```
-
-### 5. Run
-```bash
+export TELEGRAM_TOKEN="your-token"
+export DEEPSEEK_API_KEY="your-key"
+export ICLOUD_USER="your@icloud.com"
+export ICLOUD_APP_PASS="your-app-specific-password"
 python bot.py
 ```
 
-> **First run**: macOS will prompt you to grant Calendar access. Allow it in System Settings → Privacy → Calendar.
+### 5. Deploy to fly.io
+```bash
+flyctl launch
+flyctl secrets set TELEGRAM_TOKEN="..." DEEPSEEK_API_KEY="..." ICLOUD_USER="..." ICLOUD_APP_PASS="..."
+flyctl deploy
+```
 
 ---
 
 ## Usage
 
-| Say...                                          | What happens                        |
-|-------------------------------------------------|-------------------------------------|
-| "What's on my calendar this week?"             | Reads next 7 days of events         |
-| "Add dentist tomorrow at 3pm"                  | Creates event Apr X 3–4pm           |
-| "Schedule team lunch Friday 12:30–1:30pm"      | Creates event with exact times      |
-| "Delete the dentist appointment"               | Fetches events, finds + deletes it  |
-| "What calendars do I have?"                    | Lists all Apple Calendar names      |
-| "Add a reminder on April 5 at 6am for my flight" | Creates morning event              |
+Just send natural language messages to your bot:
 
-Commands:
-- `/start` — Welcome
-- `/clear` — Reset memory
-- `/help` — Help
+| Message                           | Result                              |
+|-----------------------------------|-------------------------------------|
+| "Add meeting tomorrow at 3pm"     | Creates event in iCloud calendar    |
+| "Schedule lunch Friday 12-1pm"    | Creates event with title & time     |
+| "/delete meeting"                 | Deletes event matching keyword      |
 
 ---
 
@@ -66,33 +63,40 @@ Commands:
 
 ```
 bot.py
- ├── Telegram handlers    (python-telegram-bot)
- ├── Agentic loop         (Claude claude-sonnet-4-6 + tool_use)
- │    ├── add_calendar_event
- │    ├── get_upcoming_events
- │    ├── delete_calendar_event
- │    └── list_calendars
- └── Apple Calendar API   (EventKit via pyobjc)
+ ├── Telegram message handler  (python-telegram-bot)
+ ├── LLM event extraction      (DeepSeek API)
+ ├── Calendar operations       (CalDAV/iCloud)
+ └── HTTP health check         (Port 8080 for fly.io)
 ```
 
-### Key agentic loop (in `run_agent()`):
-1. User message + history → Claude
-2. Claude returns `tool_use` block → execute the function
-3. Return result to Claude → Claude decides next step
-4. Repeat until Claude returns `end_turn` (final answer)
+### Event Flow:
+1. User sends message to Telegram bot
+2. DeepSeek extracts event details (title, date, time, location)
+3. Bot creates event in iCloud via CalDAV
+4. Bot confirms to user
+
+### Delete Flow:
+1. User sends `/delete <keyword>`
+2. Bot searches iCloud calendar for matching event
+3. Bot deletes matching event
+4. Bot confirms deletion
 
 ---
 
-## Running on Linux / Deploying to a Server
+## Environment Variables
 
-Apple Calendar (EventKit) is macOS-only. For servers, replace the calendar tool functions with:
-- **Google Calendar API** (`google-api-python-client`)
-- **CalDAV** (`caldav` library)
-
-The agentic loop and Telegram integration stays identical — just swap the tool implementations.
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `TELEGRAM_TOKEN` | Yes | Telegram bot token from @BotFather |
+| `DEEPSEEK_API_KEY` | Yes | DeepSeek API key |
+| `ICLOUD_USER` | Yes | Apple ID email |
+| `ICLOUD_APP_PASS` | Yes | App-specific password from Apple ID |
 
 ---
 
-## Keeping History
+## Deployment Notes
 
-The bot stores per-user conversation history in memory (`user_sessions` dict). For production, persist this to Redis or SQLite so history survives restarts.
+- **Platform**: fly.io (Singapore region)
+- **HTTP Server**: Runs on port 8080 for health checks
+- **Calendar**: Uses CalDAV to sync with iCloud (works from any OS)
+- **Polling**: Bot uses long polling (no webhook setup required)
