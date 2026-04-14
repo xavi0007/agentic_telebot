@@ -174,7 +174,7 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     response = client.chat.completions.create(
         model="deepseek-chat",
-        max_tokens=1000,
+        max_tokens=100000,
         messages=[{"role": "user", "content": EXTRACT_PROMPT.format(
             today=today, year=year) + f"\n\nMessage: {text}"}],
         stream=False
@@ -183,8 +183,9 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     raw = response.choices[0].message.content.strip()
     try:
         data = json.loads(raw)
-    except json.JSONDecodeError:
-        await update.message.reply_text(f"❌ Failed to parse response:\n{raw[:200]}")
+    except json.JSONDecodeError as e:
+        truncated = (raw[:300] + "...") if len(raw) > 300 else raw
+        await update.message.reply_text(f"❌ Failed to parse response:\n```\n{truncated}\n```\nError: {str(e)}")
         return
 
     events = data.get("events", [])
