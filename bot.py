@@ -25,15 +25,42 @@ ICLOUD_PASS = os.environ["ICLOUD_APP_PASS"]   # app-specific password
 # DeepSeek client (OpenAI-compatible)
 client = OpenAI(api_key=DEEPSEEK_API_KEY, base_url="https://api.deepseek.com")
 
-EXTRACT_PROMPT = """You are an event extractor. Given a message, decide if it contains a schedulable event.
-If yes, respond ONLY with valid JSON (no markdown):
-{{"event": true, "title": "...", "date": "YYYY-MM-DD", "time": "HH:MM", "duration_min": 60, "location": "..."}}
-If event details are missing, infer them if possible. 
-For example, if the message says "Meeting tomorrow at 3pm", and today is 2024-06-01, you can infer the date as "2024-06-02".
-If no duration is mentioned, default to 60 minutes. 
-If no location is mentioned, leave it as Singapore default.
-If no event is found, respond ONLY with: {{"event": false}}
-Today is {today}. Infer the year if not stated."""
+EXTRACT_PROMPT = """You are an event extractor. Given a message, extract ALL schedulable events.
+Respond ONLY with valid JSON (no markdown).
+
+Output format:
+{{"events": [
+  {{"title": "...", "date": "YYYY-MM-DD", "time": "HH:MM", "duration_min": 60, "location": "..."}},
+  {{"title": "...", "date": "YYYY-MM-DD", "time": "HH:MM", "duration_min": 60, "location": "..."}}
+]}}
+
+Rules for extraction:
+- If time is missing, default to 09:00 AM
+- If date is missing, use today's date
+- If duration is missing, default to 60 minutes
+- If location is missing, leave as empty string
+- Parse dates flexibly: "Tues 14 apr" → extract date, "Fri 17 apr" → extract date
+- Extract ALL events, even abbreviated ones
+- "330pm" = "15:30", "945am" = "09:45"
+
+EXAMPLES:
+
+Input: "Tues 14 apr dinner together, meet up"
+Output: {{"events": [{{"title": "dinner together, meet up", "date": "2026-04-14", "time": "19:00", "duration_min": 120, "location": "home"}}]}}
+
+Input: "Fri 17 apr
+- morning fasted gym
+- lunch at dim sum place
+- 330pm 1.5h wellness"
+Output: {{"events": [
+  {{"title": "morning fasted gym", "date": "2026-04-17", "time": "07:00", "duration_min": 60, "location": "thegym"}},
+  {{"title": "lunch at dim sum place", "date": "2026-04-17", "time": "12:00", "duration_min": 60, "location": "dimsumplace"}},
+  {{"title": "wellness", "date": "2026-04-17", "time": "15:30", "duration_min": 90, "location": "wellness"}}
+]}}
+
+NOTE: Non-event text like "u decide where" or (Context notes) should NOT be extracted as separate events.
+
+Today is {today}. Infer the year if not stated. For dates like "Tues 14 apr", infer the year as {year}."""
 
 
 def get_calendar():
@@ -123,28 +150,62 @@ def search_event(keyword: str, dstart=None, dend=None):
     return None
 
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
+async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Parse and add multiple events from user input"""
+    # Check if there's text after /add or if it's a reply to another message
+    text = None
+
+    if context.args:
+        # /add event description here
+        text = " ".join(context.args)
+    elif update.message.reply_to_message:
+        # /add as reply to another message
+        text = update.message.reply_to_message.text
+    else:
+        await update.message.reply_text("Usage: /add <events>\nExample:\n/add Tues 14 apr\ndinner 7pm")
+        return
+
     if not text:
+        await update.message.reply_text("No text to process")
         return
 
     today = datetime.now().strftime("%Y-%m-%d")
+    year = datetime.now().year
+
     response = client.chat.completions.create(
         model="deepseek-chat",
-        max_tokens=300,
+        max_tokens=1000,
         messages=[{"role": "user", "content": EXTRACT_PROMPT.format(
-            today=today) + f"\n\nMessage: {text}"}],
+            today=today, year=year) + f"\n\nMessage: {text}"}],
         stream=False
     )
 
     raw = response.choices[0].message.content.strip()
-    data = json.loads(raw)
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        await update.message.reply_text(f"❌ Failed to parse response:\n{raw[:200]}")
+        return
 
-    if data.get("event"):
-        create_event(data)
-        await update.message.reply_text(
-            f"📅 Added to iOS Calendar:\n{data['title']}\n{data['date']} at {data['time']}"
-        )
+    events = data.get("events", [])
+
+    if not events:
+        await update.message.reply_text("❌ No events found to add")
+        return
+
+    success_count = 0
+    for event in events:
+        try:
+            create_event(event)
+            success_count += 1
+        except Exception as e:
+            await update.message.reply_text(f"⚠️ Error adding '{event.get('title')}': {str(e)}")
+
+    result = f"✅ Added {success_count}/{len(events)} events:\n"
+    for i, event in enumerate(events, 1):
+        result += f"\n{i}. {event['title']}\n   {event['date']} at {event['time']}"
+
+    await update.message.reply_text(result)
 
 
 async def delete_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -180,9 +241,7 @@ if __name__ == "__main__":
     threading.Thread(target=run_health, daemon=True).start()
 
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-    app.add_handler(MessageHandler(
-        filters.TEXT & ~filters.COMMAND, handle_message))
-
+    app.add_handler(CommandHandler("add", add_cmd))
     app.add_handler(CommandHandler("delete", delete_cmd))
     print("Bot is running...")
     app.run_polling(drop_pending_updates=True)
