@@ -174,7 +174,7 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     response = client.chat.completions.create(
         model="deepseek-chat",
-        max_tokens=100000,
+        max_tokens=8192,
         messages=[{"role": "user", "content": EXTRACT_PROMPT.format(
             today=today, year=year) + f"\n\nMessage: {text}"}],
         stream=False
