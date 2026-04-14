@@ -150,6 +150,44 @@ def search_event(keyword: str, dstart=None, dend=None):
     return None
 
 
+def fix_json_response(raw: str) -> dict:
+    """
+    Attempt to parse JSON from LLM response, fixing common issues.
+    Handles markdown code fences, trailing commas, and other formatting problems.
+
+    Returns: dict with parsed JSON, or None if unparseable
+    """
+    # Remove markdown code fences (```json ... ``` or ``` ... ```)
+    cleaned = re.sub(r'^```(?:json)?\s*\n?', '', raw)
+    cleaned = re.sub(r'\n?```\s*$', '', cleaned)
+    cleaned = cleaned.strip()
+
+    # Try direct parse first
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        pass
+
+    # Try fixing common issues
+    # Remove trailing commas before ] or }
+    fixed = re.sub(r',(\s*[}\]])', r'\1', cleaned)
+
+    try:
+        return json.loads(fixed)
+    except json.JSONDecodeError:
+        pass
+
+    # Last resort: try to extract JSON object if it's embedded in text
+    json_match = re.search(r'\{[\s\S]*\}', fixed)
+    if json_match:
+        try:
+            return json.loads(json_match.group())
+        except json.JSONDecodeError:
+            pass
+
+    return None
+
+
 async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Parse and add multiple events from user input"""
     # Check if there's text after /add or if it's a reply to another message
@@ -181,11 +219,11 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     raw = response.choices[0].message.content.strip()
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError as e:
+    data = fix_json_response(raw)
+
+    if data is None:
         truncated = (raw[:300] + "...") if len(raw) > 300 else raw
-        await update.message.reply_text(f"❌ Failed to parse response:\n```\n{truncated}\n```\nError: {str(e)}")
+        await update.message.reply_text(f"❌ Failed to parse response:\n```\n{truncated}\n```\nCouldn't extract valid JSON.")
         return
 
     events = data.get("events", [])
